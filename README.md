@@ -35,7 +35,7 @@ relatório diz quando o objetivo **não** foi cumprido.
 cargo build --release
 
 # qualquer gateway com /v1/chat/completions (OpenAI-compatível)
-export QA_OMNIROUTE_URL=http://localhost:20128
+export QA_OMNIROUTE_URL=http://localhost:<porta-do-gateway>
 export QA_OMNIROUTE_CHAVE=<sua-chave>
 
 cargo run --release -- alvos/exemplo.json   # saída em qa-saida/<nome-do-alvo>/
@@ -268,20 +268,15 @@ Se o banco não responde, o rastro em arquivo segue e o aviso sai no `stdout`.
 | Variável | Para quê |
 |---|---|
 | `QA_OMNIROUTE_CHAVE` | **obrigatória**: chave do gateway OpenAI-compatível |
-| `QA_OMNIROUTE_URL` | URL do gateway (padrão `http://localhost:20128`) |
+| `QA_OMNIROUTE_URL` | URL do gateway (padrão: porta local do gateway) |
 | `QA_OMNIROUTE_MODELOS` | pool de modelos separado por vírgula |
 | `QA_POLITICA` | caminho do `qa-politica.json` (padrão: pasta atual) |
-| `QA_MOTOR_ALIMENTAR` | programa que registra desfechos num motor de decisão (só o rótulo em modo de ensaio) |
-| `QA_JOGO_RAIZ` | raiz do app de exemplo usado em `tools/jogo-ambiente.mjs` |
-
-O **motor de decisão** (`POST /v1/opiniao`, em `127.0.0.1:8090`) é opcional: se existe, entra como contraponto na
-decisão de executar ou pular; se está fora do ar, a rodada segue sem ele e isso fica registrado.
 
 ## Testes
 
 ```bash
 cargo test                       # testes unitários, sem rede nem Chrome
-cargo test -- --ignored          # exigem Chrome (e, nos de jogo/gateway, o ambiente de cada um)
+cargo test -- --ignored          # exigem Chrome e, em alguns, o ambiente de cada alvo
 ```
 
 Os testes com Chrome usam as páginas de [`fixtures/`](fixtures/) (aplicação mínima e formulário com `label`, caixa de
@@ -296,7 +291,6 @@ qa-agente/
 │   ├── bin/qa-aprende.rs    treino offline da política
 │   ├── exploracao.rs        o laço: escolher, clicar, observar, aprender
 │   ├── agente_llm.rs        prompt, validação da escolha, tentativas
-│   ├── omniroute.rs         cliente do gateway com rodízio de modelos
 │   ├── navegador_chrome.rs  Chrome via CDP, ações, reinício
 │   ├── observacao.rs        HTTP, WebSocket e console do navegador
 │   ├── efeito.rs            o que cada passo causou no back
@@ -306,7 +300,7 @@ qa-agente/
 │   ├── rastro.rs            registro ao vivo (arquivo e banco)
 │   ├── grafo_estados.rs     máquina de estados versionada
 │   ├── regressao.rs · avaliacao.rs · evidencias.rs · gate_humano.rs
-│   └── controlador.rs · motor.rs · insumos.rs · sondas.rs · verificacoes.rs
+│   └── controlador.rs · insumos.rs · sondas.rs · verificacoes.rs · …
 ├── alvos/exemplo.json       alvo de exemplo
 ├── fixtures/                páginas de teste
 ├── tests/                   testes com Chrome e ponta a ponta
@@ -317,8 +311,8 @@ qa-agente/
 ## Estado atual e limites conhecidos
 
 Honestidade primeiro: o agente explora, observa front e back, e registra tudo, mas **ainda não conclui fluxos longos**
-(um assistente de criação com muitas etapas costuma parar no meio). O que existe de medição está em
-[`docs/historico-de-rodadas-no-jogo.md`](docs/historico-de-rodadas-no-jogo.md).
+(um assistente de criação com muitas etapas costuma parar no meio). O que existe de medição está nos documentos
+de [`docs/`](docs/).
 
 - Falta uma **medição com bugs plantados** para dizer quantos defeitos reais ele acha (hoje se mede passos, telas e
   tokens, não defeitos).
