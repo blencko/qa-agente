@@ -127,7 +127,7 @@ impl ChromeNavegador {
     }
 
     /// Igual a `definir_cookie`; `http_only = false` deixa o cookie visivel ao JavaScript da pagina, que e como
-    /// alguns fronts leem a sessao (`document.cookie`, ex.: o Portal Gestor).
+    /// alguns fronts leem a sessao (`document.cookie`).
     pub fn definir_cookie_com(&mut self, nome: &str, valor: &str, dominio: &str, http_only: bool) -> Result<(), String> {
         self.cookie = Some((nome.to_string(), valor.to_string(), dominio.to_string(), http_only));
         self.aplicar_cookie()

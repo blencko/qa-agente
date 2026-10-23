@@ -4,7 +4,8 @@ use std::time::Duration;
 use serde_json::json;
 
 pub const URL_MOTOR: &str = "http://127.0.0.1:8090/v1/opiniao";
-pub const ALIMENTAR: &str = "C:/workflow/motor-operacao/bin/alimentar.mjs";
+/// Programa que registra o desfecho de uma decisao no motor (so o rotulo em modo de ensaio o usa). `QA_MOTOR_ALIMENTAR` troca.
+pub const ALIMENTAR: &str = "alimentar.mjs";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Opiniao {
@@ -79,7 +80,7 @@ pub fn rotular(
         return Err("resultado fora de [0, 1]".into());
     }
     let args: Vec<String> = vec![
-        ALIMENTAR.into(),
+        std::env::var("QA_MOTOR_ALIMENTAR").unwrap_or_else(|_| ALIMENTAR.into()),
         "--tipo".into(),
         tipo.into(),
         "--balde".into(),

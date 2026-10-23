@@ -40,7 +40,7 @@ pub struct VerificacaoAlvo {
 }
 
 /// Um projeto a testar. Um arquivo JSON por alvo: o mesmo `qa-agente` serve ao jogo, ao painel do Vigia,
-/// ao managerportal e ao proprio motor de decisao.
+/// a um painel interno e ao proprio motor de decisao.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Alvo {
     pub nome: String,

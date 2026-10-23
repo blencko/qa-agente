@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { appendFileSync } from "node:fs";
 import { createRequire, syncBuiltinESMExports } from "node:module";
 
-const RAIZ_JOGO = "C:/workflow/dnd-mestre";
+const RAIZ_JOGO = process.env.QA_JOGO_RAIZ ?? "C:/workflow/dnd-mestre";
 const arquivoDeParada = process.argv[2];
 if (!arquivoDeParada) throw new Error("informe o arquivo de parada como argumento");
 

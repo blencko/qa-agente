@@ -128,17 +128,23 @@ impl Rastro {
     }
 }
 
-/// Executa SQL no Postgres do RAG (container `postgres-rag`), com a senha do proprio container.
+/// Onde o espelho em banco grava: container, usuario e banco do Postgres. Variaveis `QA_RASTRO_CONTAINER`,
+/// `QA_RASTRO_USUARIO` e `QA_RASTRO_BD`; `QA_RASTRO_BANCO=desligado` mantem so o rastro em arquivo.
+pub fn destino_do_banco(ambiente: &dyn Fn(&str) -> Option<String>) -> Option<(String, String, String)> {
+    if ambiente("QA_RASTRO_BANCO").is_some_and(|v| v.eq_ignore_ascii_case("desligado")) {
+        return None;
+    }
+    let pega = |k: &str, padrao: &str| ambiente(k).filter(|v| !v.trim().is_empty()).unwrap_or_else(|| padrao.to_string());
+    Some((pega("QA_RASTRO_CONTAINER", "postgres-rag"), pega("QA_RASTRO_USUARIO", "raguser"), pega("QA_RASTRO_BD", "rag_ecosystem")))
+}
+
+/// Executa SQL no Postgres do espelho (ver `destino_do_banco`), com a senha do proprio container.
 pub fn psql(sql: &str) -> Result<(), String> {
+    let (container, usuario, banco) =
+        destino_do_banco(&|k| std::env::var(k).ok()).ok_or_else(|| "espelho em banco desligado (QA_RASTRO_BANCO)".to_string())?;
+    let comando = format!("PGPASSWORD=\"$POSTGRES_PASSWORD\" psql -U {usuario} -d {banco} -v ON_ERROR_STOP=1 -q");
     let mut filho = Command::new("docker")
-        .args([
-            "exec",
-            "-i",
-            "postgres-rag",
-            "sh",
-            "-c",
-            "PGPASSWORD=\"$POSTGRES_PASSWORD\" psql -U raguser -d rag_ecosystem -v ON_ERROR_STOP=1 -q",
-        ])
+        .args(["exec", "-i", &container, "sh", "-c", &comando])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -167,6 +173,20 @@ mod testes {
             tokens: Some(10),
             efeito: Default::default(),
         }
+    }
+
+    #[test]
+    fn destino_do_banco_tem_padrao_aceita_troca_e_pode_ser_desligado() {
+        let nada = |_: &str| None;
+        assert_eq!(destino_do_banco(&nada), Some(("postgres-rag".into(), "raguser".into(), "rag_ecosystem".into())));
+        let trocado = |k: &str| match k {
+            "QA_RASTRO_CONTAINER" => Some("meu-pg".to_string()),
+            "QA_RASTRO_BD" => Some("qa".to_string()),
+            _ => None,
+        };
+        assert_eq!(destino_do_banco(&trocado), Some(("meu-pg".into(), "raguser".into(), "qa".into())));
+        let desligado = |k: &str| (k == "QA_RASTRO_BANCO").then(|| "Desligado".to_string());
+        assert_eq!(destino_do_banco(&desligado), None);
     }
 
     #[test]

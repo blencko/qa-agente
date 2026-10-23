@@ -17,7 +17,7 @@ Vigia, ver o fim) e não tem relatório.
 | Harness para agente tem de lidar com não-determinismo, injeção de prompt, limite de janela de contexto e latência | agente | texto da tela entra como dado, e a ação é validada contra a lista de opções |
 | **Fingerprint de modelo:** verificar o que o gateway realmente serve, porque há troca em fallback | `insumos.jsonl` | **implementado:** o modelo que respondeu cada passo é gravado |
 | **Regressão de custo de inferência de LLM** em CI e roteamento de modelos em camadas por custo e latência | `insumos.jsonl` | **implementado:** tokens por passo e por execução |
-| Divisão planejar, gerar, executar, inspecionar falha e reparar | o desenho BOT-7526 | o `qa-agente` cobre planejar e executar; inspeção de falha e reparo ficam para depois |
+| Divisão planejar, gerar, executar, inspecionar falha e reparar | o desenho de referencia (fluxo de agente de QA autonomo) | o `qa-agente` cobre planejar e executar; inspeção de falha e reparo ficam para depois |
 | Navegador real versus MCP de navegador headless: a escolha depende do caso | `navegador_chrome.rs` | usamos Chrome headless por CDP |
 
 ## Bug encontrado no Vigia (não corrigido)
