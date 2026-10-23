@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use qa_agente::aprendizado::{ler_transicoes, Politica};
+use qa_agente::aprendizado::{ler_execucoes, Politica};
 use qa_agente::rastro::{lit, psql};
 
 fn main() -> ExitCode {
@@ -14,14 +14,43 @@ fn main() -> ExitCode {
     let mut epocas = 30usize;
     let mut banco = false;
     let mut logs: Vec<PathBuf> = Vec::new();
+    let (mut migrar_de, mut aplicacao, mut resto, mut prefixos) = (None::<PathBuf>, String::new(), String::new(), String::new());
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--politica" => politica = PathBuf::from(args.next().unwrap_or_default()),
             "--epocas" => epocas = args.next().and_then(|v| v.parse().ok()).unwrap_or(30),
             "--banco" => banco = true,
+            "--migrar" => migrar_de = Some(PathBuf::from(args.next().unwrap_or_default())),
+            "--aplicacao" => aplicacao = args.next().unwrap_or_default(),
+            "--resto" => resto = args.next().unwrap_or_default(),
+            "--prefixos" => prefixos = args.next().unwrap_or_default(),
             _ => logs.push(PathBuf::from(a)),
         }
+    }
+    // Migracao: politica unica -> politicas/<aplicacao>.json e politicas/<resto>.json, com copia de seguranca.
+    if let Some(origem) = migrar_de {
+        let lista: Vec<String> = prefixos.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect();
+        if aplicacao.is_empty() || resto.is_empty() || lista.is_empty() {
+            eprintln!("uso: qa-aprende --migrar <arquivo.json> --aplicacao <slug> --prefixos /a/,/b/ --resto <slug-das-demais>");
+            return ExitCode::from(2);
+        }
+        let dir = PathBuf::from("politicas");
+        return match qa_agente::aprendizado::migrar(
+            &origem,
+            &dir.join(format!("{aplicacao}.json")),
+            &dir.join(format!("{resto}.json")),
+            &lista,
+        ) {
+            Ok(msg) => {
+                println!("{msg}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("migracao recusada: {e}");
+                ExitCode::from(2)
+            }
+        };
     }
     if logs.is_empty() {
         eprintln!("uso: qa-aprende [--politica arq.json] [--epocas N] [--banco] <log> [<log> ...]");
@@ -38,11 +67,10 @@ fn main() -> ExitCode {
     for caminho in &logs {
         match std::fs::read(caminho) {
             Ok(bytes) => {
-                let ts = ler_transicoes(&String::from_utf8_lossy(&bytes));
-                println!("{}: {} transicoes", caminho.display(), ts.len());
-                if !ts.is_empty() {
-                    execucoes.push(ts);
-                }
+                let do_arquivo = ler_execucoes(&String::from_utf8_lossy(&bytes));
+                let total: usize = do_arquivo.iter().map(Vec::len).sum();
+                println!("{}: {} execucao(oes), {} transicoes", caminho.display(), do_arquivo.len(), total);
+                execucoes.extend(do_arquivo);
             }
             Err(e) => eprintln!("{}: {e}", caminho.display()),
         }

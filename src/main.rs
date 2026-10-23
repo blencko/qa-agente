@@ -32,8 +32,7 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
     match rodar(Path::new(caminho)) {
-        Ok(true) => ExitCode::SUCCESS,
-        Ok(false) => ExitCode::from(1),
+        Ok(codigo) => ExitCode::from(codigo),
         Err(erro) => {
             eprintln!("erro: {erro}");
             ExitCode::from(2)
@@ -41,7 +40,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn rodar(caminho: &Path) -> Result<bool, String> {
+fn rodar(caminho: &Path) -> Result<u8, String> {
     let inicio = std::time::Instant::now();
     let alvo = Alvo::ler(caminho)?;
     let pasta = PathBuf::from("qa-saida").join(&alvo.nome);
@@ -58,7 +57,15 @@ fn rodar(caminho: &Path) -> Result<bool, String> {
     if let Some(c) = &alvo.cookie {
         navegador.definir_cookie_com(&c.nome, &c.valor, &c.dominio, c.http_only)?;
     }
-    let agente = AgenteLlm::new(OmniRoute::do_ambiente().map_err(|e| format!("{e:?}"))?);
+    // Pre-voo do gateway de LLM: uma chamada barata. Gateway fora do ar ou lento demais derrubaria a rodada no meio e
+    // gastaria o navegador e a cota de uma jornada que nao tem como terminar: melhor recusar logo, com o motivo.
+    let gateway = OmniRoute::do_ambiente().map_err(|e| format!("{e:?}"))?;
+    let tempo_do_gateway = gateway.saude(std::time::Duration::from_secs(10))?;
+    println!("[llm] gateway respondeu em {} ms", tempo_do_gateway.as_millis());
+    if tempo_do_gateway > std::time::Duration::from_secs(2) {
+        println!("[llm] atencao: gateway lento (mais de 2 s para uma chamada trivial); a rodada pode estourar o orcamento por chamada");
+    }
+    let agente = AgenteLlm::new(gateway);
     let mut grafo = VersionedStateGraph::default();
     let pasta_passos = pasta.clone();
     // Rastro ao vivo: cada passo vai na hora para stdout, passos.jsonl, checkpoint.json e o banco do RAG.
@@ -70,13 +77,53 @@ fn rodar(caminho: &Path) -> Result<bool, String> {
     let mut rastro = qa_agente::rastro::Rastro::iniciar(&id_execucao, &alvo.nome, &alvo.objetivo, &pasta);
     // limite_passos = 0 significa SEM limite: o agente decide quando parar (cumpriu, esgotou as opcoes ou cota)
     let limite = if alvo.limite_passos == 0 { usize::MAX } else { alvo.limite_passos };
-    // Politica aprendida (Q-learning): experiencia no prompt, atualizada a cada passo, salva a cada 5 e no fim.
-    let caminho_politica = PathBuf::from(std::env::var("QA_POLITICA").unwrap_or_else(|_| "qa-politica.json".into()));
+    // Politica aprendida (Q-learning), POR APLICACAO: `politicas/<aplicacao>.json` (ou o arquivo de `QA_POLITICA`).
+    // `QA_POLITICA_MODO` = completa (padrao) | conselho (so aconselha no prompt) | desligada; `QA_POLITICA_CONGELADA=1`
+    // carrega mas nao grava (para experimento). Atualizada a cada passo, salva a cada 5 e no fim, mesclando.
+    let caminho_politica = match std::env::var("QA_POLITICA") {
+        Ok(p) if !p.trim().is_empty() => PathBuf::from(p),
+        _ => PathBuf::from("politicas").join(format!("{}.json", alvo.nome_da_aplicacao())),
+    };
+    let modo_da_politica = std::env::var("QA_POLITICA_MODO").unwrap_or_else(|_| "completa".into());
+    let congelada = std::env::var("QA_POLITICA_CONGELADA").is_ok_and(|v| v == "1");
     let politica = qa_agente::aprendizado::Politica::carregar(&caminho_politica).unwrap_or_default();
-    println!("[politica] {} telas, {} pares aprendidos em {}", politica.estados(), politica.entradas(), caminho_politica.display());
+    politica.definir_so_conselho(modo_da_politica == "conselho");
+    let politica_ativa = if modo_da_politica == "desligada" { None } else { Some(&politica) };
+    println!(
+        "[politica] modo {modo_da_politica}{} | {} | {}",
+        if congelada { " (congelada)" } else { "" },
+        politica.resumo(),
+        caminho_politica.display()
+    );
     // Estado gravado ANTES da jornada (consultas SQL somente-leitura do alvo) e logs lidos a cada passo.
     let consultas = alvo.consultas();
     let sql_antes: Vec<Result<String, String>> = consultas.iter().map(qa_agente::consultas_sql::executar).collect();
+    // Criterios de aceite (consultas com `depois_contem`): o que ja era verdade ANTES nao paga recompensa; so a borda
+    // de subida durante a rodada (0 -> 1), e so se avalia depois de um passo que GRAVOU algo no servidor.
+    let mut cumpridos: std::collections::BTreeSet<String> = consultas
+        .iter()
+        .zip(&sql_antes)
+        .filter(|(c, antes)| !c.depois_contem.is_empty() && antes.as_ref().is_ok_and(|t| t.contains(&c.depois_contem)))
+        .map(|(c, _)| c.nome.clone())
+        .collect();
+    let mut avaliar_criterios = |p: &qa_agente::exploracao::Passo| -> Vec<String> {
+        if p.efeito.escritas.is_empty() {
+            return Vec::new();
+        }
+        let mut novos = Vec::new();
+        for c in consultas.iter().filter(|c| !c.depois_contem.is_empty() && !cumpridos.contains(&c.nome)) {
+            match qa_agente::consultas_sql::executar(c) {
+                Ok(texto) if texto.contains(&c.depois_contem) => {
+                    novos.push(c.nome.clone());
+                }
+                Ok(_) => {}
+                // sem sinal: nenhuma recompensa e um aviso; a consulta falhar nunca derruba a rodada
+                Err(e) => println!("[criterio] consulta {:?} falhou, sem sinal neste passo: {e}", c.nome),
+            }
+        }
+        cumpridos.extend(novos.iter().cloned());
+        novos
+    };
     let mut logs_vivos = qa_agente::log_servidor::LogsVivos::novo(
         alvo.logs.iter().map(|l| (l.nome.clone(), PathBuf::from(&l.caminho))).collect(),
     );
@@ -95,13 +142,14 @@ fn rodar(caminho: &Path) -> Result<bool, String> {
         },
         &mut |n, p| {
             rastro.passo(n, p);
-            if n % 5 == 0 {
+            if n % 5 == 0 && !congelada && politica_ativa.is_some() {
                 let _ = politica.salvar(&caminho_politica);
             }
         },
-        Some(&politica),
-        qa_agente::exploracao::Restricao::nova(&alvo.acoes_de_escrita, alvo.max_escritas).as_ref(),
+        politica_ativa,
+        qa_agente::exploracao::Restricao::nova(&alvo.acoes_de_escrita, alvo.max_escritas).map(|r| r.com_max_por_tipo(alvo.max_por_tipo)).as_ref(),
         Some(&mut fonte_de_logs),
+        Some(&mut avaliar_criterios),
     );
     let jornada = match jornada {
         Ok(j) => j,
@@ -115,7 +163,9 @@ fn rodar(caminho: &Path) -> Result<bool, String> {
         jornada.passos.last().map(|p| p.destino.as_str()).unwrap_or(""),
         &jornada.parou_por,
     );
-    let _ = politica.salvar(&caminho_politica);
+    if !congelada && politica_ativa.is_some() {
+        let _ = politica.salvar(&caminho_politica);
+    }
     let passos = &jornada.passos;
 
     let depois = sondas::executar(&alvo.sondas());
@@ -237,18 +287,20 @@ fn rodar(caminho: &Path) -> Result<bool, String> {
         acumulado.write_all(jsonl.as_bytes()).map_err(|e| e.to_string())?;
     }
 
+    let objetivo_cumprido = jornada.parou_por == qa_agente::exploracao::OBJETIVO_CUMPRIDO;
+    let (rotulo, codigo_de_saida) = qa_agente::evidencias::rotulo_do_veredito(relatorio.passou, objetivo_cumprido);
     println!(
         "{}: {} ({} passos; {} requisicoes HTTP; websocket {} enviados / {} recebidos)",
         alvo.nome,
-        if relatorio.passou { "VERDE" } else { "COM FALHAS" },
+        rotulo,
         passos.len(),
         b.requisicoes,
         b.ws_enviados,
         b.ws_recebidos
     );
     println!("  parou: {}", jornada.parou_por);
-    if jornada.parou_por != qa_agente::exploracao::OBJETIVO_CUMPRIDO {
-        println!("  atencao: objetivo NAO cumprido (verde aqui quer dizer sem falha encontrada, nao objetivo atingido)");
+    if !objetivo_cumprido {
+        println!("  atencao: objetivo NAO cumprido (nenhuma falha encontrada, mas a jornada nao chegou ao fim: nao e aprovacao)");
     }
     for aviso in b.log_avisos.iter().filter(|a| a.starts_with("log do servidor configurado")) {
         println!("  atencao: {aviso}");
@@ -261,5 +313,5 @@ fn rodar(caminho: &Path) -> Result<bool, String> {
         // o relatorio parcial ja foi salvo; o codigo de saida 2 diz que o agente falhou, nao que a app falhou
         return Err(format!("o agente falhou durante a jornada (relatorio parcial salvo em {}): {e}", arquivo.display()));
     }
-    Ok(relatorio.passou)
+    Ok(codigo_de_saida)
 }

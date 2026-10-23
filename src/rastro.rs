@@ -90,7 +90,7 @@ impl Rastro {
         let _ = std::io::stdout().flush();
         let linha = serde_json::json!({
             "n": n, "origem": p.origem, "acao": p.acao, "destino": p.destino, "ambigua": p.ambigua,
-            "modelo": p.modelo, "tokens": p.tokens, "efeito": p.efeito,
+            "modelo": p.modelo, "tokens": p.tokens, "efeito": p.efeito, "criterios": p.criterios,
         });
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(self.pasta.join("passos.jsonl")) {
             let _ = writeln!(f, "{linha}");
@@ -172,6 +172,7 @@ mod testes {
             modelo: Some("m".into()),
             tokens: Some(10),
             efeito: Default::default(),
+            criterios: Vec::new(),
         }
     }
 

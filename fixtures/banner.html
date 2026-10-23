@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<title>Pagina com banner de cookies</title>
+</head>
+<body>
+<h1>Painel</h1>
+<button id="entrar">Entrar na campanha</button>
+<div id="banner" style="position:fixed;bottom:0;left:0;right:0;background:#eee;padding:12px">
+  Usamos cookies.
+  <button id="gerenciar">Gerenciar cookies</button>
+  <button id="aceitar">Aceitar cookies</button>
+</div>
+<script>
+document.getElementById('aceitar').addEventListener('click', () => {
+  document.getElementById('banner').style.display = 'none';
+  document.body.setAttribute('data-consentiu', 'sim');
+});
+</script>
+</body>
+</html>

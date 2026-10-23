@@ -33,3 +33,14 @@ fn modo_generico_preenche_marca_e_seleciona() {
     nav.clicar("Marcar: Aceito os termos").unwrap();
     assert_eq!(nav.texto("#resumo").unwrap(), "nome=Aria;termos=false;classe=mago;especie=anao");
 }
+
+#[test]
+#[ignore = "exige Chrome instalado"]
+fn banner_de_cookies_e_aceito_uma_vez_ao_abrir_e_nao_vira_opcao_do_agente() {
+    let raiz = env!("CARGO_MANIFEST_DIR").replace('\\', "/");
+    let mut nav = ChromeNavegador::novo_generico(None, EVITAR_PADRAO).expect("subir o Chrome");
+    nav.abrir(&format!("file:///{raiz}/fixtures/banner.html")).unwrap();
+    let opcoes = nav.clicaveis().unwrap();
+    assert!(opcoes.contains(&"Entrar na campanha".to_string()), "{opcoes:?}");
+    assert!(!opcoes.iter().any(|o| o.to_lowercase().contains("cookie")), "banner ainda visivel: {opcoes:?}");
+}

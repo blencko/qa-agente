@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="pt-br">
+<head><meta charset="utf-8"><title>Loja de teste - tarefas</title></head>
+<body>
+<h1>Tarefas</h1>
+<a href="/">Voltar ao inicio</a>
+<div>
+  <label for="titulo">Titulo da tarefa</label>
+  <input id="titulo" type="text">
+  <button id="criar">Criar tarefa</button>
+</div>
+<p id="msg"></p>
+<ul id="lista"></ul>
+<script>
+async function listar() {
+  const r = await fetch('/api/tarefas');
+  const itens = await r.json();
+  document.getElementById('lista').innerHTML = itens.map(t => '<li>' + (t || '(sem titulo)') + '</li>').join('');
+}
+document.getElementById('criar').addEventListener('click', async () => {
+  const titulo = document.getElementById('titulo').value;
+  const r = await fetch('/api/tarefas', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ titulo }) });
+  document.getElementById('msg').textContent = r.ok ? 'Tarefa criada' : 'Erro ao criar';
+  listar();
+});
+listar();
+</script>
+</body>
+</html>

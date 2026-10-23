@@ -7,6 +7,8 @@ pub struct RespostaHttp {
     pub url: String,
     pub status: u32,
     pub mime: String,
+    /// Verbo HTTP do pedido ("GET", "POST"...); vazio quando o pedido nao foi visto (resposta chegou antes).
+    pub metodo: String,
 }
 
 /// O que o navegador viu do backend e do console enquanto o agente navegava.
@@ -17,6 +19,8 @@ pub struct Observacao {
     pub erros_console: Vec<String>,
     pub frames_ws: Vec<FrameWs>,
     pub erros_ws: Vec<String>,
+    /// Pedidos enviados, por id do CDP: (verbo, url). Serve para dar verbo as respostas e URL as falhas de rede.
+    pub pedidos: std::collections::HashMap<String, (String, String)>,
 }
 
 /// Um frame de WebSocket. Guarda so o nome do evento Socket.IO e o tamanho: o conteudo pode ter dado do usuario.
@@ -117,7 +121,7 @@ mod testes {
     use super::*;
 
     fn resposta(url: &str, status: u32) -> RespostaHttp {
-        RespostaHttp { url: url.into(), status, mime: "application/json".into() }
+        RespostaHttp { url: url.into(), status, mime: "application/json".into(), metodo: "GET".into() }
     }
 
     #[test]

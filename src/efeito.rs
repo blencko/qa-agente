@@ -10,6 +10,9 @@ pub struct Efeito {
     /// "2xx /api/campanhas/{id}": classe de status + caminho sem host, query nem ids.
     #[serde(default)]
     pub endpoints: Vec<String>,
+    /// "POST /api/x": o servidor GRAVOU algo (POST, PUT, PATCH ou DELETE com 2xx).
+    #[serde(default)]
+    pub escritas: Vec<String>,
     #[serde(default)]
     pub erros_5xx: Vec<String>,
     #[serde(default)]
@@ -46,9 +49,18 @@ fn unico(v: &mut Vec<String>, item: String) {
     }
 }
 
-fn eh_api(mime: &str, status: u32) -> bool {
-    // arquivos estaticos (js, css, imagem, fonte) nao dizem nada sobre o backend, a menos que falhem
-    status >= 400 || mime.contains("json") || mime.contains("event-stream") || mime.contains("text/plain")
+fn eh_escrita(metodo: &str) -> bool {
+    matches!(metodo.to_ascii_uppercase().as_str(), "POST" | "PUT" | "PATCH" | "DELETE")
+}
+
+fn eh_api(mime: &str, status: u32, metodo: &str) -> bool {
+    // arquivos estaticos (js, css, imagem, fonte) nao dizem nada sobre o backend, a menos que falhem. Pedido que ESCREVE
+    // (POST, PUT...) e sempre do backend, mesmo respondendo HTML (formulario tradicional, SSR, htmx).
+    status >= 400
+        || mime.contains("json")
+        || mime.contains("event-stream")
+        || mime.contains("text/plain")
+        || eh_escrita(metodo)
 }
 
 impl Efeito {
@@ -56,13 +68,20 @@ impl Efeito {
     pub fn de_delta(antes: &Observacao, depois: &Observacao) -> Efeito {
         let mut e = Efeito::default();
         for r in depois.respostas.iter().skip(antes.respostas.len()) {
-            if !eh_api(&r.mime, r.status) {
+            if !eh_api(&r.mime, r.status, &r.metodo) {
                 continue;
             }
-            let item = format!("{}xx {}", r.status / 100, rota(&r.url));
+            // com o verbo: o POST de aprovar e o GET da lista na mesma rota deixam de ser a mesma "rota"
+            let pedido = if r.metodo.is_empty() {
+                rota(&r.url)
+            } else {
+                format!("{} {}", r.metodo.to_ascii_uppercase(), rota(&r.url))
+            };
+            let item = format!("{}xx {}", r.status / 100, pedido);
             match r.status {
                 500..=599 => unico(&mut e.erros_5xx, item.clone()),
                 400..=499 => unico(&mut e.erros_4xx, item.clone()),
+                200..=299 if eh_escrita(&r.metodo) => unico(&mut e.escritas, pedido),
                 _ => {}
             }
             unico(&mut e.endpoints, item);
@@ -114,7 +133,28 @@ mod testes {
     use crate::observacao::{FrameWs, RespostaHttp};
 
     fn resp(url: &str, status: u32, mime: &str) -> RespostaHttp {
-        RespostaHttp { url: url.into(), status, mime: mime.into() }
+        RespostaHttp { url: url.into(), status, mime: mime.into(), metodo: String::new() }
+    }
+
+    fn resp_m(url: &str, status: u32, mime: &str, metodo: &str) -> RespostaHttp {
+        RespostaHttp { url: url.into(), status, mime: mime.into(), metodo: metodo.into() }
+    }
+
+    #[test]
+    fn o_verbo_separa_a_escrita_da_leitura_e_post_em_html_conta() {
+        let antes = Observacao::default();
+        let depois = Observacao {
+            respostas: vec![
+                resp_m("http://h/api/casos", 200, "application/json", "GET"),
+                resp_m("http://h/api/casos", 200, "application/json", "POST"),
+                resp_m("http://h/form", 200, "text/html", "POST"),
+                resp_m("http://h/pagina", 200, "text/html", "GET"),
+            ],
+            ..Default::default()
+        };
+        let e = Efeito::de_delta(&antes, &depois);
+        assert_eq!(e.endpoints, vec!["2xx GET /api/casos", "2xx POST /api/casos", "2xx POST /form"]);
+        assert_eq!(e.escritas, vec!["POST /api/casos", "POST /form"], "so POST/PUT/PATCH/DELETE com 2xx e a pagina HTML (GET) fica de fora");
     }
 
     #[test]

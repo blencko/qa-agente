@@ -43,7 +43,12 @@ pub struct VerificacaoAlvo {
 /// a um painel interno e ao proprio motor de decisao.
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Alvo {
+    /// Nome desta rodada ou historia (vira a pasta de saida, ex.: `historia-101`).
     pub nome: String,
+    /// A APLICACAO sob teste (slug, ex.: `portal-gestor`). Historias diferentes da mesma aplicacao compartilham a
+    /// politica aprendida em `politicas/<aplicacao>.json`: a tela e a mesma, so o fluxo muda. Vazio = usa `nome`.
+    #[serde(default)]
+    pub aplicacao: String,
     pub url: String,
     pub objetivo: String,
     /// `generico` (le titulo e botoes do DOM) ou `data-acao` (app que expoe `data-estado` e `data-acao`).
@@ -76,6 +81,9 @@ pub struct Alvo {
     /// Maximo de acoes de escrita por rodada (0 = sem limite).
     #[serde(default)]
     pub max_escritas: usize,
+    /// Maximo de escritas de CADA tipo (cada padrao de `acoes_de_escrita`); 0 = so vale o total. Ex.: 1 aprovar e 1 reprovar.
+    #[serde(default)]
+    pub max_por_tipo: usize,
     /// Logs do projeto (back, BFF, front...) lidos a CADA passo: erro grave novo vira achado ligado ao passo que o causou.
     /// `log_servidor` continua valendo para o relatorio final.
     #[serde(default)]
@@ -142,6 +150,15 @@ impl Alvo {
         Ok(alvo)
     }
 
+    /// Nome da aplicacao dona da politica aprendida: `aplicacao`, ou `nome` quando nao foi dito.
+    pub fn nome_da_aplicacao(&self) -> &str {
+        if self.aplicacao.trim().is_empty() {
+            &self.nome
+        } else {
+            &self.aplicacao
+        }
+    }
+
     pub fn consultas(&self) -> Vec<crate::consultas_sql::ConsultaSql> {
         self.consultas_sql
             .iter()
@@ -191,6 +208,16 @@ mod testes {
         assert_eq!(a.logs[0].nome, "back");
         assert_eq!(a.consultas()[0].container, "mysql-db");
         assert_eq!(a.consultas()[0].depois_contem, "1");
+    }
+
+    #[test]
+    fn historias_da_mesma_aplicacao_compartilham_a_politica() {
+        let a = Alvo::de_json(r#"{"nome":"historia-101","aplicacao":"portal","url":"u","objetivo":"o"}"#).unwrap();
+        let b = Alvo::de_json(r#"{"nome":"historia-102","aplicacao":"portal","url":"u","objetivo":"o"}"#).unwrap();
+        assert_eq!(a.nome_da_aplicacao(), "portal");
+        assert_eq!(a.nome_da_aplicacao(), b.nome_da_aplicacao());
+        // sem `aplicacao`, o nome do alvo e a aplicacao
+        assert_eq!(Alvo::de_json(MINIMO).unwrap().nome_da_aplicacao(), "jogo");
     }
 
     #[test]

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="pt-br">
+<head><meta charset="utf-8"><title>Loja de teste - relatorios</title></head>
+<body>
+<h1>Relatorios</h1>
+<a href="/">Voltar ao inicio</a>
+<button id="resumo">Gerar resumo</button>
+<button id="saude">Ver contagem de visitas</button>
+<p id="saida"></p>
+<script>
+document.getElementById('resumo').addEventListener('click', async () => {
+  const r = await fetch('/api/relatorio/resumo');
+  document.getElementById('saida').textContent = 'Resumo: ' + (await r.text());
+});
+document.getElementById('saude').addEventListener('click', async () => {
+  const r = await fetch('/api/ping');
+  document.getElementById('saida').textContent = 'Visitas: ' + (await r.text());
+});
+</script>
+</body>
+</html>

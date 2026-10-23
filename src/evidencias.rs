@@ -110,3 +110,26 @@ mod testes {
         assert_eq!(r.falhas, vec!["a".to_string(), "x".to_string()]);
     }
 }
+
+/// Rotulo do veredito da rodada e codigo de saida: `VERDE` so quando nao houve falha E o objetivo foi cumprido; sem
+/// falha mas sem objetivo cumprido e `INCOMPLETO` (codigo 3), que nunca pode passar por aprovacao.
+pub fn rotulo_do_veredito(passou: bool, objetivo_cumprido: bool) -> (&'static str, u8) {
+    match (passou, objetivo_cumprido) {
+        (false, _) => ("COM FALHAS", 1),
+        (true, false) => ("INCOMPLETO", 3),
+        (true, true) => ("VERDE", 0),
+    }
+}
+
+#[cfg(test)]
+mod testes_do_veredito {
+    use super::rotulo_do_veredito;
+
+    #[test]
+    fn verde_exige_objetivo_cumprido_e_incompleto_nao_e_aprovacao() {
+        assert_eq!(rotulo_do_veredito(true, true), ("VERDE", 0));
+        assert_eq!(rotulo_do_veredito(true, false), ("INCOMPLETO", 3));
+        assert_eq!(rotulo_do_veredito(false, true), ("COM FALHAS", 1));
+        assert_eq!(rotulo_do_veredito(false, false), ("COM FALHAS", 1));
+    }
+}

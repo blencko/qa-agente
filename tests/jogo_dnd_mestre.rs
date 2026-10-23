@@ -85,7 +85,7 @@ fn qa_guiado_pelo_llm_navega_o_jogo() {
     let mut rastro = Rastro::iniciar(&id, "dnd-mestre", &objetivo, &PathBuf::from(&pasta_passos).join(&id));
     // Politica aprendida (Q-learning): experiencia no prompt, atualizada a cada passo, salva a cada 5 e no fim.
     let caminho_politica =
-        PathBuf::from(std::env::var("QA_POLITICA").unwrap_or_else(|_| format!("{}/qa-politica.json", env!("CARGO_MANIFEST_DIR"))));
+        PathBuf::from(std::env::var("QA_POLITICA").unwrap_or_else(|_| format!("{}/politicas/dnd-mestre.json", env!("CARGO_MANIFEST_DIR"))));
     let politica = qa_agente::aprendizado::Politica::carregar(&caminho_politica).unwrap_or_default();
     println!("[politica] {} telas, {} pares aprendidos em {}", politica.estados(), politica.entradas(), caminho_politica.display());
     let jornada = jornada_guiada_observada(
@@ -107,6 +107,7 @@ fn qa_guiado_pelo_llm_navega_o_jogo() {
             }
         },
         Some(&politica),
+        None,
         None,
         None,
     );

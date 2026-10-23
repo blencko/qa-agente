@@ -120,7 +120,7 @@ mod testes {
     use crate::evidencias::{consolidar, Evidencias};
 
     fn passo(origem: &str, acao: &str, destino: &str) -> Passo {
-        Passo { origem: origem.into(), acao: acao.into(), destino: destino.into(), ambigua: false, modelo: None, tokens: None, efeito: Default::default() }
+        Passo { origem: origem.into(), acao: acao.into(), destino: destino.into(), ambigua: false, modelo: None, tokens: None, efeito: Default::default(), criterios: Vec::new() }
     }
 
     fn relatorio() -> Relatorio {

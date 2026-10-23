@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="pt-br">
+<head><meta charset="utf-8"><title>Loja de teste - configuracoes</title></head>
+<body>
+<h1>Configuracoes</h1>
+<a href="/">Voltar ao inicio</a>
+<button id="tema">Salvar tema escuro</button>
+<button id="exportar">Exportar dados</button>
+<p id="msg"></p>
+<script>
+document.getElementById('tema').addEventListener('click', async () => {
+  await fetch('/api/preferencias', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ tema: 'escuro' }) });
+  document.getElementById('msg').textContent = 'Tema salvo';
+});
+document.getElementById('exportar').addEventListener('click', async () => {
+  await fetch('/api/exportar', { method: 'POST' });
+  document.getElementById('msg').textContent = 'Exportado com sucesso';
+});
+</script>
+</body>
+</html>

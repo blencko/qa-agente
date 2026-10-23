@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="pt-br">
+<head><meta charset="utf-8"><title>Loja de teste - inicio</title></head>
+<body>
+<h1>Painel da loja</h1>
+<p id="status">Bem-vindo.</p>
+<nav>
+  <a href="/tarefas">Tarefas</a>
+  <a href="/config">Configuracoes</a>
+  <a href="/relatorios">Relatorios</a>
+</nav>
+<button id="sincronizar">Sincronizar</button>
+<button id="ajuda">Ajuda</button>
+<p id="msg"></p>
+<script>
+document.getElementById('sincronizar').addEventListener('click', async () => {
+  const m = document.getElementById('msg');
+  try { await fetch('/api/sync'); m.textContent = 'Sincronizado'; }
+  catch (e) { m.textContent = 'Sincronizado'; }
+});
+document.getElementById('ajuda').addEventListener('click', () => {
+  document.getElementById('painel-de-ajuda').textContent = 'Ajuda carregada';
+});
+fetch('/api/ping');
+</script>
+</body>
+</html>

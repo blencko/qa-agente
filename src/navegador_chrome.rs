@@ -12,12 +12,18 @@ use headless_chrome::{Browser, LaunchOptions, Tab};
 use crate::observacao::{evento_socketio, Coletor, FrameWs, Observacao, RespostaHttp};
 use crate::portas::Navegador;
 
+/// Clica no botao visivel de aceitar o consentimento de cookies, se existir. Devolve "ok" ou "nada".
+const DISPENSAR_BANNER_JS: &str = "(() => { const re = /^(aceitar( todos)?( os)?( cookies)?|accept( all)?( cookies)?|concordo|entendi|ok, entendi)$/i; \
+    const els = Array.from(document.querySelectorAll('button, [role=button], a')); \
+    for (const e of els) { const t = (e.innerText || e.textContent || '').trim(); const r = e.getBoundingClientRect(); \
+    if (re.test(t) && r.width > 0 && r.height > 0) { e.click(); return 'ok'; } } return 'nada'; })()";
+
 /// Janela de desktop. A padrao do Chrome headless e de celular (cerca de 800x600): os apps responsivos trocam o menu por
 /// um hamburguer e escondem abas, e o agente passa a testar um layout que ninguem usa no desktop.
 pub const JANELA_PADRAO: (u32, u32) = (1366, 900);
 
 /// Rotulos que o modo generico nunca clica: acoes destrutivas ou que encerram a sessao.
-pub const EVITAR_PADRAO: &str = "excluir|apagar|deletar|remover|sair|logout|encerrar|delete|remove";
+pub const EVITAR_PADRAO: &str = "excluir|apagar|deletar|remover|sair|logout|encerrar|delete|remove|cookie";
 
 /// Como a aplicacao expoe estado e acoes ao agente.
 #[derive(Debug, Clone)]
@@ -51,27 +57,47 @@ fn observar(aba: &Arc<Tab>, coletor: &Coletor) -> Result<(), String> {
         "qa-agente",
         Box::new(move |evento, _| {
             if let Ok(mut o) = respostas.lock() {
+                let metodo = o.pedidos.get(&evento.request_id).map(|(m, _)| m.clone()).unwrap_or_default();
                 o.respostas.push(RespostaHttp {
                     url: evento.response.url.clone(),
                     status: evento.response.status as u32,
                     mime: evento.response.mime_type.clone(),
+                    metodo,
                 });
             }
         }),
     )
     .map_err(erro)?;
     aba.enable_log().map_err(erro)?;
+    // Sem isso o CDP nao entrega `Runtime.exceptionThrown`: excecao JS nao tratada nunca chegaria ao relatorio.
+    aba.enable_runtime().map_err(erro)?;
     let eventos = Arc::clone(coletor);
     aba.add_event_listener(Arc::new(move |evento: &Event| {
         let Ok(mut o) = eventos.lock() else { return };
         match evento {
+            Event::NetworkRequestWillBeSent(r) => {
+                let (id, req) = (r.params.request_id.clone(), &r.params.request);
+                o.pedidos.insert(id, (req.method.clone(), req.url.clone()));
+            }
             Event::NetworkLoadingFailed(f) if f.params.canceled != Some(true) => {
-                o.falhas_de_rede.push(f.params.error_text.clone());
+                // com a URL do pedido: sem ela, dois endpoints diferentes viram um achado so
+                let url = o.pedidos.get(&f.params.request_id).map(|(_, u)| crate::observacao::url_limpa(u));
+                let texto = match url {
+                    Some(u) => format!("{u}: {}", f.params.error_text),
+                    None => f.params.error_text.clone(),
+                };
+                o.falhas_de_rede.push(texto);
             }
             Event::LogEntryAdded(e) if e.params.entry.level == LogEntryLevel::Error => {
                 o.erros_console.push(e.params.entry.text.clone());
             }
-            Event::RuntimeExceptionThrown(e) => o.erros_console.push(e.params.exception_details.text.clone()),
+            Event::RuntimeExceptionThrown(e) => {
+                // `text` e so "Uncaught": a mensagem de verdade esta em `exception.description`
+                let d = &e.params.exception_details;
+                let detalhe = d.exception.as_ref().and_then(|x| x.description.clone()).unwrap_or_default();
+                let primeira = detalhe.lines().next().unwrap_or("").chars().take(200).collect::<String>();
+                o.erros_console.push(if primeira.is_empty() { d.text.clone() } else { primeira });
+            }
             Event::NetworkWebSocketFrameSent(f) => o.frames_ws.push(frame_ws(true, &f.params.response.payload_data)),
             Event::NetworkWebSocketFrameReceived(f) => o.frames_ws.push(frame_ws(false, &f.params.response.payload_data)),
             Event::NetworkWebSocketFrameError(f) => o.erros_ws.push(f.params.error_message.clone()),
@@ -200,6 +226,12 @@ impl Navegador for ChromeNavegador {
     fn abrir(&mut self, url: &str) -> Result<(), String> {
         self.aba.navigate_to(url).map_err(erro)?;
         self.aba.wait_until_navigated().map_err(erro)?;
+        // Banner de consentimento (cookies): aceita uma vez, no inicio, para nao gastar passos nem foco do agente.
+        // So no modo generico; falha ao procurar o banner nunca derruba a abertura.
+        if matches!(self.modo, Modo::Generico { .. }) {
+            sleep(Duration::from_millis(1500));
+            let _ = self.avaliar_texto(DISPENSAR_BANNER_JS);
+        }
         Ok(())
     }
 

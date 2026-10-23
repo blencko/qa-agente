@@ -66,6 +66,8 @@ pub struct Passo {
     pub tokens: Option<u64>,
     /// O que o passo causou no backend (rotas de API, eventos de WebSocket, erros).
     pub efeito: crate::efeito::Efeito,
+    /// Criterios de aceite que ficaram verdadeiros neste passo (borda de subida); vazio quase sempre.
+    pub criterios: Vec<String>,
 }
 
 /// Passo 4 em acao: o agente escolhe, a cada tela, a proxima opcao rumo ao objetivo. Para quando o agente
@@ -115,6 +117,8 @@ pub struct Restricao {
     /// Pedacos (minusculos) que marcam uma opcao como escrita, ex.: `aprovar`, `reprovar`, `salvar`.
     pub padroes: Vec<String>,
     pub max_escritas: usize,
+    /// Maximo de escritas de CADA tipo (padrao de `padroes`); 0 = so vale o total. Ex.: 1 aprovacao e 1 reprovacao.
+    pub max_por_tipo: usize,
 }
 
 impl Restricao {
@@ -122,13 +126,56 @@ impl Restricao {
     pub fn nova(padroes: &str, max_escritas: usize) -> Option<Restricao> {
         let padroes: Vec<String> =
             padroes.split('|').map(|p| p.trim().to_lowercase()).filter(|p| !p.is_empty()).collect();
-        (!padroes.is_empty() && max_escritas > 0).then_some(Restricao { padroes, max_escritas })
+        (!padroes.is_empty() && max_escritas > 0).then_some(Restricao { padroes, max_escritas, max_por_tipo: 0 })
     }
 
     pub fn eh_escrita(&self, acao: &str) -> bool {
         let a = acao.to_lowercase();
         self.padroes.iter().any(|p| a.contains(p))
     }
+
+    /// Passa a limitar tambem cada TIPO de escrita (cada padrao) a `n` por rodada.
+    pub fn com_max_por_tipo(mut self, n: usize) -> Self {
+        self.max_por_tipo = n;
+        self
+    }
+
+    /// Indice do primeiro padrao que a acao casa (o "tipo" da escrita).
+    fn tipo_de(&self, acao: &str) -> Option<usize> {
+        let a = acao.to_lowercase();
+        self.padroes.iter().position(|p| a.contains(p))
+    }
+
+    /// A opcao esta bloqueada? `feitas` sao as acoes ja executadas nesta rodada. Bloqueia ao atingir o total de
+    /// escritas ou, com `max_por_tipo`, o limite do tipo dela (1 aprovacao e 1 reprovacao nao viram 2 aprovacoes).
+    pub fn bloqueia(&self, opcao: &str, feitas: &[&str]) -> bool {
+        if !self.eh_escrita(opcao) {
+            return false;
+        }
+        if feitas.iter().filter(|f| self.eh_escrita(f)).count() >= self.max_escritas {
+            return true;
+        }
+        match (self.max_por_tipo, self.tipo_de(opcao)) {
+            (0, _) | (_, None) => false,
+            (max, Some(tipo)) => feitas.iter().filter(|f| self.tipo_de(f) == Some(tipo)).count() >= max,
+        }
+    }
+}
+
+/// Marca dos criterios de aceite ja cumpridos, anexada ao estado que a POLITICA enxerga: antes e depois de cumprir o
+/// CA01 deixam de ser a mesma situacao (senao a politica repete a acao que ja pagou). Termina em `]`, nunca em digito:
+/// a chave abstrata arranca contador colado ao fim de um segmento.
+fn sufixo_criterios(cumpridos: &[String]) -> String {
+    if cumpridos.is_empty() {
+        String::new()
+    } else {
+        format!(" / ✓[{}]", cumpridos.join("+"))
+    }
+}
+
+/// Codigo curto de um criterio: a primeira palavra do nome ("CA01 aprovacao registrada" -> "CA01").
+fn codigo_do_criterio(nome: &str) -> String {
+    nome.split_whitespace().next().unwrap_or(nome).to_string()
 }
 
 /// Motivo de parada quando o proprio agente diz que cumpriu o objetivo.
@@ -167,7 +214,7 @@ pub fn jornada_guiada_com(
     limite: usize,
     ao_passo: &mut dyn FnMut(usize, &mut dyn Navegador) -> Result<(), String>,
 ) -> Result<Jornada, String> {
-    jornada_guiada_observada(agente, navegador, url, objetivo, versao, grafo, limite, ao_passo, &mut |_, _| {}, None, None, None)
+    jornada_guiada_observada(agente, navegador, url, objetivo, versao, grafo, limite, ao_passo, &mut |_, _| {}, None, None, None, None)
 }
 
 /// Igual a `jornada_guiada_com`, chamando tambem `ao_feito(numero, passo)` assim que o passo termina, para
@@ -186,6 +233,7 @@ pub fn jornada_guiada_observada(
     politica: Option<&crate::aprendizado::Politica>,
     restricao: Option<&Restricao>,
     mut fonte_extra: Option<&mut dyn FnMut() -> Vec<String>>,
+    mut criterios: Option<&mut dyn FnMut(&Passo) -> Vec<String>>,
 ) -> Result<Jornada, String> {
     navegador.abrir(url)?;
     ao_passo(0, navegador)?;
@@ -232,9 +280,13 @@ pub fn jornada_guiada_observada(
         };
     }
     let mut decisoes_confiantes = 0usize;
+    let mut recentes: Vec<crate::aprendizado::Transicao> = Vec::new();
+    let mut cumpridos_cod: Vec<String> = Vec::new();
     while passos.len() < limite {
         let mut via_politica = false;
         let estado = nav!(navegador.estado());
+        let chave_da_tela = crate::aprendizado::chave_estado(&estado);
+        let estado_pol = format!("{estado}{}", sufixo_criterios(&cumpridos_cod));
         let opcoes = nav!(navegador.clicaveis());
         if opcoes.is_empty() {
             parou_por = "nada clicavel na tela".into();
@@ -244,14 +296,11 @@ pub fn jornada_guiada_observada(
         // Sem isso o modelo reclica o mesmo atalho (ja vimos 22 cliques em "nome" sem nunca digitar).
         // Restricao de escrita: ao atingir o maximo de acoes de escrita da rodada, elas somem da lista para TODOS os
         // escolhedores (LLM, politica e fallback).
-        let escritas_feitas = restricao
-            .map(|r| passos.iter().filter(|p| r.eh_escrita(&p.acao)).count())
-            .unwrap_or(0);
-        let escrita_esgotada = restricao.is_some_and(|r| escritas_feitas >= r.max_escritas);
+        let feitas: Vec<&str> = passos.iter().map(|p| p.acao.as_str()).collect();
         let disponiveis: Vec<String> = opcoes
             .iter()
-            .filter(|o| tentadas.get(&(estado.clone(), base_da_acao(o))).copied().unwrap_or(0) < LIMITE_REPETICAO)
-            .filter(|o| !(escrita_esgotada && restricao.is_some_and(|r| r.eh_escrita(o))))
+            .filter(|o| tentadas.get(&(chave_da_tela.clone(), base_da_acao(o))).copied().unwrap_or(0) < LIMITE_REPETICAO)
+            .filter(|o| !restricao.is_some_and(|r| r.bloqueia(o, &feitas)))
             .cloned()
             .collect();
         if disponiveis.is_empty() {
@@ -261,7 +310,7 @@ pub fn jornada_guiada_observada(
         let mut contexto = navegador.contexto();
         // Experiencia aprendida entra na frente do texto da tela (o orcamento do prompt corta o fim, nao o comeco).
         if let Some(p) = politica {
-            let conselho = p.conselho(&estado, &disponiveis);
+            let conselho = p.conselho(&estado_pol, &disponiveis);
             if !conselho.is_empty() {
                 contexto = format!("{conselho}\n{contexto}");
             }
@@ -271,9 +320,11 @@ pub fn jornada_guiada_observada(
         // passa a ser a da politica (UCB entre as opcoes sem texto), marcada como tal.
         let empacou = historico.len() >= PARADOS_PARA_POLITICA
             && historico.iter().rev().take(PARADOS_PARA_POLITICA).all(|h| h.contains("(a tela nao mudou)"));
-        let da_politica = politica.filter(|_| empacou).and_then(|p| {
+        // Modo "so conselho" (braco B do experimento): a politica aconselha no prompt mas nao escolhe nada.
+        let politica_escolhe = politica.filter(|p| !p.so_conselho());
+        let da_politica = politica_escolhe.filter(|_| empacou).and_then(|p| {
             let sem_texto: Vec<String> = disponiveis.iter().filter(|o| !o.starts_with("Preencher: ")).cloned().collect();
-            p.melhor_por_ucb(&estado, &sem_texto).cloned()
+            p.melhor_por_ucb(&estado_pol, &sem_texto).cloned()
         });
         // Confiante: a politica ja viu esta tela vezes suficientes e uma opcao se destaca com folga. Escolhe sozinha,
         // sem gastar uma chamada ao LLM. Toda AUDITORIA_CONFIANTE-esima decisao confiante vai ao LLM mesmo assim,
@@ -281,7 +332,7 @@ pub fn jornada_guiada_observada(
         let confiante = if da_politica.is_some() {
             None
         } else {
-            politica.and_then(|p| p.escolha_confiante(&estado, &disponiveis).cloned()).filter(|_| {
+            politica_escolhe.and_then(|p| p.escolha_confiante(&estado_pol, &disponiveis).cloned()).filter(|_| {
                 decisoes_confiantes += 1;
                 decisoes_confiantes % AUDITORIA_CONFIANTE != 0
             })
@@ -335,7 +386,7 @@ pub fn jornada_guiada_observada(
         // O que este passo causou no backend: diferenca entre a observacao de antes e a de depois do clique.
         let obs_antes = navegador.observacao();
         nav!(navegador.clicar(&acao));
-        *tentadas.entry((estado.clone(), base_da_acao(&acao))).or_insert(0) += 1;
+        *tentadas.entry((chave_da_tela.clone(), base_da_acao(&acao))).or_insert(0) += 1;
         let destino = nav!(navegador.estado());
         let mut efeito = crate::efeito::Efeito::de_delta(&obs_antes, &navegador.observacao());
         // Achados GRAVES novos nos logs do servidor (back, BFF, front) neste passo entram no efeito, como as respostas HTTP.
@@ -351,20 +402,54 @@ pub fn jornada_guiada_observada(
         let ambigua = grafo.registrar(versao, &estado, &acao, &destino).is_err();
         // O agente fica sabendo o que o servidor fez (ou quebrou) no passo, junto da tela.
         let nota_back = efeito.resumo();
-        let base = if destino == estado { format!("{acao} (a tela nao mudou)") } else { acao.clone() };
+        let mudou = crate::aprendizado::chave_estado(&destino) != chave_da_tela;
+        let base = if !mudou { format!("{acao} (a tela nao mudou)") } else { acao.clone() };
         historico.push(if nota_back.is_empty() { base } else { format!("{base} {nota_back}") });
-        passos.push(Passo { origem: estado, acao, destino, ambigua, modelo: uso.modelo, tokens: uso.tokens, efeito });
+        passos.push(Passo {
+            origem: estado,
+            acao,
+            destino,
+            ambigua,
+            modelo: uso.modelo,
+            tokens: uso.tokens,
+            efeito,
+            criterios: Vec::new(),
+        });
+        // Criterios de aceite que ficaram verdadeiros NESTE passo (o avaliador entrega so a borda de subida: cada
+        // criterio paga uma vez so). Entram no passo, no historico do LLM e na recompensa.
+        let novos = match (criterios.as_mut(), passos.last()) {
+            (Some(avaliar), Some(ultimo)) => avaliar(ultimo),
+            _ => Vec::new(),
+        };
+        if !novos.is_empty() {
+            historico.push(format!("[criterio cumprido: {}]", novos.join(", ")));
+            if let Some(ultimo) = passos.last_mut() {
+                ultimo.criterios = novos.clone();
+            }
+            cumpridos_cod.extend(novos.iter().map(|n| codigo_do_criterio(n)));
+        }
         if let Some(ultimo) = passos.last() {
-            // aprende na hora: a recompensa mede progresso (tela nova, etapa que avanca ou recua, passo inutil)
+            // aprende na hora: a recompensa mede o OBJETIVO (criterio cumprido) acima de tudo, e depois progresso
+            // (tela nova, etapa que avanca ou recua, passo inutil, escrita no servidor). A politica enxerga o estado
+            // COM os criterios ja cumpridos: depois do CA01, "Aprovar" na mesma tela e outra situacao.
             if let Some(p) = politica {
                 let t = crate::aprendizado::Transicao {
-                    origem: ultimo.origem.clone(),
+                    origem: estado_pol.clone(),
                     acao: ultimo.acao.clone(),
-                    destino: ultimo.destino.clone(),
+                    destino: format!("{}{}", ultimo.destino, sufixo_criterios(&cumpridos_cod)),
                     efeito: ultimo.efeito.clone(),
+                    criterios: ultimo.criterios.clone(),
                 };
                 let r = crate::aprendizado::recompensa(&t, &mut vistas);
-                p.aprender(&t, r);
+                p.aprender_de(&t, r, via_politica);
+                if !novos.is_empty() {
+                    // o caminho ate o criterio tambem merece: credito aos ultimos passos, descontado pela distancia
+                    p.creditar_retroativamente(&recentes, crate::aprendizado::RECOMPENSA_CRITERIO);
+                }
+                recentes.push(t);
+                if recentes.len() > crate::aprendizado::CREDITO_RETROATIVO_PASSOS {
+                    recentes.remove(0);
+                }
             }
             ao_feito(passos.len(), ultimo);
         }
@@ -579,7 +664,7 @@ mod testes {
             origem: "login".into(),
             acao: "entrar".into(),
             destino: "painel".into(),
-            efeito: Default::default(),
+            ..Default::default()
         };
         for _ in 0..4 {
             pol.aprender(&t, 2.0);
@@ -597,6 +682,7 @@ mod testes {
             &mut |_, _| Ok(()),
             &mut |_, _| {},
             Some(&pol),
+            None,
             None,
             None,
         )
@@ -640,6 +726,7 @@ mod testes {
             None,
             Some(&r),
             None,
+            None,
         )
         .unwrap();
         let perguntas = j.passos.iter().filter(|p| p.acao == "perguntar").count();
@@ -649,6 +736,160 @@ mod testes {
         assert!(!depois.is_empty() && depois.iter().all(|o| !o.contains(&"perguntar".to_string())), "{vistas:?}");
         assert_eq!(Restricao::nova("", 3), None);
         assert_eq!(Restricao::nova("salvar", 0), None);
+    }
+
+    /// Tela que so muda o contador do titulo ("Pagina1" -> "Pagina2"): a MESMA tela para a politica e a anti-repeticao.
+    struct Giratorio(u32);
+
+    impl Navegador for Giratorio {
+        fn abrir(&mut self, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn clicar(&mut self, _: &str) -> Result<(), String> {
+            self.0 += 1;
+            Ok(())
+        }
+        fn preencher(&mut self, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn estado(&mut self) -> Result<String, String> {
+            Ok(format!("Pagina{}", self.0))
+        }
+        fn clicaveis(&mut self) -> Result<Vec<String>, String> {
+            Ok(vec!["x".into()])
+        }
+        fn texto(&mut self, _: &str) -> Result<String, String> {
+            Ok(String::new())
+        }
+        fn captura(&mut self) -> Result<Vec<u8>, String> {
+            Ok(vec![])
+        }
+    }
+
+    #[test]
+    fn anti_repeticao_usa_a_chave_abstrata_e_nao_o_estado_cru() {
+        // Sem a chave abstrata, "Pagina1", "Pagina2"... seriam telas diferentes e o agente clicaria "x" ate o limite.
+        let agente = Roteiro(vec![Some("x"); 20], Default::default());
+        let mut grafo = VersionedStateGraph::default();
+        let j = jornada_guiada(&agente, &mut Giratorio(1), "u", "o", "v1", &mut grafo, 10).unwrap();
+        assert_eq!(j.len(), LIMITE_REPETICAO, "so {LIMITE_REPETICAO} cliques na mesma tela abstrata, fez {}", j.len());
+    }
+
+    #[test]
+    fn criterio_cumprido_paga_o_passo_e_da_credito_retroativo_aos_anteriores() {
+        let pol = crate::aprendizado::Politica::nova();
+        let agente = Roteiro(vec![Some("entrar"), Some("abrir_chat"), None], Default::default());
+        let mut grafo = VersionedStateGraph::default();
+        let mut avaliar = |p: &Passo| -> Vec<String> {
+            if p.acao == "abrir_chat" {
+                vec!["CA01".to_string()]
+            } else {
+                Vec::new()
+            }
+        };
+        let j = jornada_guiada_observada(
+            &agente,
+            &mut Falso::jornada(),
+            "x",
+            "o",
+            "v1",
+            &mut grafo,
+            10,
+            &mut |_, _| Ok(()),
+            &mut |_, _| {},
+            Some(&pol),
+            None,
+            None,
+            Some(&mut avaliar),
+        )
+        .unwrap();
+        assert_eq!(j.passos[1].criterios, vec!["CA01".to_string()]);
+        assert!(j.passos[0].criterios.is_empty());
+        let do_criterio = pol.celula("painel", "abrir_chat").unwrap().q;
+        let anterior = pol.celula("login", "entrar").unwrap().q;
+        assert!(do_criterio > 1.0, "o passo do criterio recebe a recompensa grande: {do_criterio}");
+        assert!(anterior > 1.0, "o passo que levou ate ele recebe credito retroativo: {anterior}");
+        assert_eq!(j.parou_por, OBJETIVO_CUMPRIDO);
+    }
+
+    #[test]
+    fn restricao_por_tipo_permite_uma_aprovacao_e_uma_reprovacao_e_no_maximo_isso() {
+        let r = Restricao::nova("aprovar|reprovar", 2).unwrap().com_max_por_tipo(1);
+        assert!(r.bloqueia("Aprovar", &["Aprovar"]), "a 2a aprovacao fica bloqueada");
+        assert!(!r.bloqueia("Reprovar", &["Aprovar"]), "a reprovacao ainda e permitida");
+        assert!(!r.bloqueia("Voltar", &["Aprovar"]), "o que nao e escrita nunca e bloqueado");
+        assert!(r.bloqueia("Reprovar", &["Aprovar", "Reprovar"]) && r.bloqueia("Aprovar", &["Aprovar", "Reprovar"]));
+        // sem max_por_tipo vale so o total: duas aprovacoes seriam permitidas (o defeito visto na rodada 10)
+        let so_total = Restricao::nova("aprovar|reprovar", 2).unwrap();
+        assert!(!so_total.bloqueia("Aprovar", &["Aprovar"]));
+    }
+
+    #[test]
+    fn depois_de_cumprir_um_criterio_a_politica_ve_outro_estado_na_mesma_tela() {
+        let pol = crate::aprendizado::Politica::nova();
+        let agente = Roteiro(vec![Some("entrar"), Some("abrir_chat"), None], Default::default());
+        let mut grafo = VersionedStateGraph::default();
+        let mut avaliar = |p: &Passo| -> Vec<String> {
+            if p.acao == "entrar" {
+                vec!["CA01 aprovacao registrada".to_string()]
+            } else {
+                Vec::new()
+            }
+        };
+        jornada_guiada_observada(
+            &agente,
+            &mut Falso::jornada(),
+            "x",
+            "o",
+            "v1",
+            &mut grafo,
+            10,
+            &mut |_, _| Ok(()),
+            &mut |_, _| {},
+            Some(&pol),
+            None,
+            None,
+            Some(&mut avaliar),
+        )
+        .unwrap();
+        assert!(pol.celula("painel / ✓[CA01]", "abrir_chat").is_some(), "o 2o passo foi aprendido no estado COM o criterio");
+        assert!(pol.celula("painel", "abrir_chat").is_none(), "e nao no estado sem ele");
+    }
+
+    #[test]
+    fn modo_so_conselho_nao_deixa_a_politica_escolher_mesmo_confiante() {
+        let pol = crate::aprendizado::Politica::nova();
+        let t = crate::aprendizado::Transicao {
+            origem: "login".into(),
+            acao: "entrar".into(),
+            destino: "painel".into(),
+            ..Default::default()
+        };
+        for _ in 0..4 {
+            pol.aprender(&t, 2.0);
+        }
+        pol.definir_so_conselho(true);
+        let agente = ComPlano(Default::default(), Ok(vec![]));
+        let mut grafo = VersionedStateGraph::default();
+        let j = jornada_guiada_observada(
+            &agente,
+            &mut Falso::jornada(),
+            "x",
+            "o",
+            "v1",
+            &mut grafo,
+            5,
+            &mut |_, _| Ok(()),
+            &mut |_, _| {},
+            Some(&pol),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        // quem decidiu foi o LLM (que disse "cumprido" na 1a pergunta): a politica, mesmo confiante, ficou calada
+        assert!(j.passos.is_empty());
+        assert_eq!(agente.0.borrow().len(), 1);
     }
 
     #[test]
