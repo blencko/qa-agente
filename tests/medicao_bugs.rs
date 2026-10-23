@@ -1,7 +1,7 @@
 //! Mede QUANTOS DEFEITOS o agente acha (nao quantos passos dá): sobe o app de `fixtures/bugs-plantados/` com seis
 //! defeitos conhecidos, roda o binario `qa-agente` de verdade e cruza o `relatorio.json` com o catalogo.
 //!
-//! Dois testes, ambos `--ignored` (Chrome + `QA_OMNIROUTE_CHAVE` + COTA: so rode com ordem do Daniel):
+//! Dois testes, ambos `--ignored` (Chrome + `QA_OMNIROUTE_CHAVE` + COTA: so rode com autorizacao explicita de quem paga a cota):
 //!
 //! 1. `mede_quantos_defeitos_plantados_o_agente_acha`: uma medicao simples.
 //!    Ambiente: QA_RODADAS (1), QA_LIMITE_PASSOS (40), QA_COBERTURA_MINIMA (0 = so mede).
@@ -13,7 +13,7 @@
 //!    novos, com UM modelo so fixado em QA_OMNIROUTE_MODELOS (o rodizio de modelos confunde os bracos).
 //!    Metrica primaria: passos ate os defeitos visiveis no rastro aparecerem (B1, B4, B5); secundarias: tokens,
 //!    chamadas ao LLM, cobertura final de defeitos.
-//!    Ambiente obrigatorio: QA_AUTORIZADO_PELO_DANIEL=1 e QA_MODELO_FIXO=<modelo>.
+//!    Ambiente obrigatorio: QA_AUTORIZADO=1 e QA_MODELO_FIXO=<modelo>.
 //!    Opcional: QA_AB_RODADAS (5, minimo 5), QA_AB_TREINO (3), QA_LIMITE_PASSOS (40).
 //!    Usa as flags QA_POLITICA_MODO=completa|conselho|desligada e QA_POLITICA_CONGELADA=1 do binario.
 //!
@@ -48,14 +48,18 @@ struct Rodada {
 
 /// Uma rodada completa do agente contra um servidor novo, em pasta propria (qa-saida e politica nao se misturam com
 /// as do usuario). `ambiente` = variaveis extras do binario (politica, modelo...). A pasta e apagada no fim.
-fn rodar_uma(limite: usize, ambiente: &[(&str, String)]) -> Option<Rodada> {
+///
+/// LOGS: cada tentativa deixa em `qa-saida/ab-logs/<rotulo>-t<N>/` a saida completa do agente (`stdout.log`,
+/// `stderr.log`), o rastro por passo (`passos.jsonl`), o relatorio (`relatorio.json`, parcial quando falha) e a
+/// politica usada (`politica-usada.json`). Nada disso e apagado: e o que permite ver POR QUE uma rodada falhou.
+fn rodar_uma(rotulo: &str, limite: usize, ambiente: &[(&str, String)]) -> Option<Rodada> {
     const TENTATIVAS: usize = 3;
     for t in 1..=TENTATIVAS {
-        match tentar_uma(limite, ambiente) {
+        match tentar_uma(&format!("{rotulo}-t{t}"), limite, ambiente) {
             Ok(r) => return Some(r),
             Err(e) => {
                 let curto: String = e.chars().take(300).collect();
-                println!("  rodada invalida (falha do agente/gateway, tentativa {t}/{TENTATIVAS}): {curto}");
+                println!("  rodada invalida ({rotulo}; falha do agente/gateway, tentativa {t}/{TENTATIVAS}): {curto}");
                 if t < TENTATIVAS {
                     std::thread::sleep(std::time::Duration::from_secs(20));
                 }
@@ -66,7 +70,7 @@ fn rodar_uma(limite: usize, ambiente: &[(&str, String)]) -> Option<Rodada> {
 }
 
 /// Uma tentativa. `Err` = o AGENTE falhou (codigo 2: gateway fora, cadeia esgotada...), nao a app: nao e medida.
-fn tentar_uma(limite: usize, ambiente: &[(&str, String)]) -> Result<Rodada, String> {
+fn tentar_uma(rotulo: &str, limite: usize, ambiente: &[(&str, String)]) -> Result<Rodada, String> {
     static CONTADOR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = CONTADOR.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let trabalho = std::env::temp_dir().join(format!("qa-medicao-{}-{n}", std::process::id()));
@@ -79,9 +83,28 @@ fn tentar_uma(limite: usize, ambiente: &[(&str, String)]) -> Result<Rodada, Stri
     for (k, v) in ambiente {
         cmd.env(k, v);
     }
+    let inicio = std::time::Instant::now();
     let saida = cmd.output().expect("executar qa-agente");
     let codigo = saida.status.code().unwrap_or(-1);
     let pasta = trabalho.join("qa-saida").join(NOME_DO_ALVO);
+    // logs da tentativa, ANTES de apagar a pasta de trabalho
+    let seguro: String = rotulo.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '_' }).collect();
+    let logs = Path::new(env!("CARGO_MANIFEST_DIR")).join("qa-saida").join("ab-logs").join(&seguro);
+    let _ = std::fs::create_dir_all(&logs);
+    let _ = std::fs::write(logs.join("stdout.log"), &saida.stdout);
+    let _ = std::fs::write(logs.join("stderr.log"), &saida.stderr);
+    for arquivo in ["passos.jsonl", "relatorio.json"] {
+        let _ = std::fs::copy(pasta.join(arquivo), logs.join(arquivo));
+    }
+    if let Some((_, caminho)) = ambiente.iter().find(|(k, _)| *k == "QA_POLITICA") {
+        let _ = std::fs::copy(caminho, logs.join("politica-usada.json"));
+    }
+    let n_passos = std::fs::read_to_string(pasta.join("passos.jsonl")).map(|t| t.lines().count()).unwrap_or(0);
+    println!(
+        "  [{rotulo}] codigo {codigo}, {n_passos} passos, {}s; logs em {}",
+        inicio.elapsed().as_secs(),
+        logs.display()
+    );
     let resultado = if codigo == 2 {
         Err(String::from_utf8_lossy(&saida.stderr).to_string())
     } else {
@@ -110,7 +133,7 @@ fn mede_quantos_defeitos_plantados_o_agente_acha() {
     let mut soma = 0.0;
     for n in 1..=rodadas {
         let politica = std::env::temp_dir().join(format!("qa-politica-medicao-{}-{n}.json", std::process::id()));
-        let r = rodar_uma(limite, &[("QA_POLITICA", politica.display().to_string())]).expect("o agente falhou nas 3 tentativas");
+        let r = rodar_uma(&format!("simples-{n}"), limite, &[("QA_POLITICA", politica.display().to_string())]).expect("o agente falhou nas 3 tentativas");
         let _ = std::fs::remove_file(&politica);
         let p = pontuar(&r.relatorio);
         soma += p.cobertura();
@@ -158,26 +181,33 @@ struct Coleta {
 }
 
 #[test]
-#[ignore = "exige Chrome, QA_OMNIROUTE_CHAVE, QA_AUTORIZADO_PELO_DANIEL=1 e QA_MODELO_FIXO; gasta cota"]
+#[ignore = "exige Chrome, QA_OMNIROUTE_CHAVE, QA_AUTORIZADO=1 e QA_MODELO_FIXO; gasta cota"]
 fn ab_a_politica_ajuda() {
     assert!(std::env::var("QA_OMNIROUTE_CHAVE").is_ok(), "defina QA_OMNIROUTE_CHAVE");
     assert_eq!(
-        std::env::var("QA_AUTORIZADO_PELO_DANIEL").as_deref(),
+        std::env::var("QA_AUTORIZADO").as_deref(),
         Ok("1"),
-        "este experimento gasta cota: so com ordem explicita do Daniel (QA_AUTORIZADO_PELO_DANIEL=1)"
+        "este experimento gasta cota: so com autorizacao explicita de quem paga a cota (QA_AUTORIZADO=1)"
     );
     let modelo = std::env::var("QA_MODELO_FIXO").expect("defina QA_MODELO_FIXO: um modelo so, o rodizio confunde os bracos");
     assert!(!modelo.contains(','), "QA_MODELO_FIXO deve ser UM modelo, nao uma lista: {modelo}");
     let rodadas = numero("QA_AB_RODADAS", 5.0) as usize;
     assert!(rodadas >= 5, "menos de 5 rodadas por braco nao distingue efeito de ruido");
-    let treino = numero("QA_AB_TREINO", 3.0) as usize;
+    // QA_AB_BASE = politica ja treinada a reaproveitar (pula o treino); a original nunca e alterada, so copiada.
+    let base_pronta = std::env::var("QA_AB_BASE").ok().filter(|p| !p.is_empty());
+    let treino = if base_pronta.is_some() { 0 } else { numero("QA_AB_TREINO", 3.0) as usize };
     let limite = numero("QA_LIMITE_PASSOS", 40.0) as usize;
 
     // Treino: politica completa, aprendendo, acumulando numa politica-base.
     let base: PathBuf = std::env::temp_dir().join(format!("qa-politica-base-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&base);
+    if let Some(origem) = &base_pronta {
+        std::fs::copy(origem, &base).unwrap_or_else(|e| panic!("QA_AB_BASE {origem}: {e}"));
+        println!("politica-base reaproveitada de {origem} (sem treino)");
+    }
     for i in 1..=treino {
         let Some(r) = rodar_uma(
+            &format!("treino-{i}"),
             limite,
             &[
                 ("QA_POLITICA", base.display().to_string()),
@@ -199,6 +229,7 @@ fn ab_a_politica_ajuda() {
             let copia = std::env::temp_dir().join(format!("qa-politica-ab-{}-{rodada}-{i}.json", std::process::id()));
             std::fs::copy(&base, &copia).expect("copiar a politica-base");
             let r = rodar_uma(
+                &format!("r{rodada}-{}", nome.replace('\x27', "p")),
                 limite,
                 &[
                     ("QA_POLITICA", copia.display().to_string()),
