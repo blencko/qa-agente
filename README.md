@@ -59,48 +59,19 @@ aponte para produção.
 ### 🧬 Arquitetura em 30 segundos
 
 ```mermaid
-flowchart LR
-    subgraph Entrada["🎯 Entrada"]
-        ALVO[/"alvo.json<br/>URL · objetivo · sessão"/]
-    end
-
-    subgraph Agente["⚙️ qa-agente"]
-        CTRL["Controlador<br/>executar, pular ou bloquear"]
-        LLM["Agente LLM<br/>escolhe a próxima ação"]
-        POL["Política (Q-learning)<br/>experiência e UCB"]
-        NAV["Navegador<br/>Chrome via CDP"]
-        EFE["Efeito no back<br/>HTTP · WS · logs · SQL"]
-        REL["Relatório<br/>veredito + evidências"]
-    end
-
-    subgraph Alvo["🧪 Aplicação sob teste"]
-        FRONT["Front"]
-        BACK["Back / BFF"]
-        BANCO[("Banco")]
-    end
-
-    subgraph Externos["☁️ Serviços"]
-        GW["Gateway OpenAI-compatível"]
-        PG[("Postgres opcional<br/>rastro e política")]
-    end
-
-    ALVO --> CTRL --> LLM
-    POL -. conselho .-> LLM
-    LLM <--> GW
-    LLM --> NAV --> FRONT --> BACK --> BANCO
-    NAV --> EFE
-    BACK -. logs .-> EFE
-    BANCO -. SELECT .-> EFE
-    EFE -- recompensa --> POL
-    EFE --> REL
-    REL -.-> PG
-
-    style Entrada fill:#2E86AB22,stroke:#2E86AB,stroke-width:2px
-    style Agente fill:#CE422B22,stroke:#CE422B,stroke-width:2px
-    style Alvo fill:#6DB33F22,stroke:#6DB33F,stroke-width:2px
-    style Externos fill:#FF990022,stroke:#FF9900,stroke-width:2px
-    style LLM fill:#512BD4,color:#fff
-    style POL fill:#512BD4,color:#fff
+flowchart TD
+    A["1 Alvo<br/>URL, objetivo, sessão, critérios e limites"] --> B["2 Pré-voo<br/>gateway de LLM, sondas de saúde e SQL de antes"]
+    B --> C["3 Observar<br/>a tela no Chrome e o efeito no back:<br/>HTTP, WebSocket, logs e SQL"]
+    C --> D["4 Decidir<br/>LLM (pelo gateway) com o conselho da política,<br/>ou a política sozinha quando está confiante"]
+    D --> E["5 Agir<br/>clica ou preenche na aplicação sob teste,<br/>com limite de escrita"]
+    E --> F["6 Medir o efeito e dar a recompensa<br/>critério de aceite cumprido, progresso, achados do back"]
+    F --> G{"7 Terminou?"}
+    G -- "não" --> C
+    G -- "sim: objetivo cumprido,<br/>opções esgotadas ou cota do gateway" --> H["8 Verificações finais<br/>sondas e SQL de depois, logs do servidor"]
+    H --> I["9 Relatório e evidências<br/>VERDE, INCOMPLETO ou COM FALHAS<br/>capturas, rastro e política atualizada"]
+    I --> J["10 QA humano<br/>analisa o relatório, aprova GO / NO-GO"]
+    F -. "aprendizado (Q-learning)" .-> D
+    J -. "investigação de falhas" .-> A
 ```
 
 ---
@@ -162,16 +133,18 @@ Um arquivo JSON por alvo; o mesmo executável serve a qualquer aplicação web.
 | `evitar` | rótulos que nunca são clicados (padrão: excluir, apagar, remover, sair, logout…) |
 | `limite_passos` | teto de passos; `0` = sem limite (o agente decide quando parar) |
 | `acoes_de_escrita` + `max_escritas` | rótulos que contam como escrita e o máximo por rodada; **vale para qualquer escolhedor** (LLM, política e fallback) |
+| `max_por_tipo` | com `max_escritas`, limita também cada tipo de escrita (ex.: `1` = uma aprovação e uma reprovação, nunca duas aprovações) |
+| `aplicacao` | slug da aplicação sob teste; histórias da mesma aplicação **compartilham a política aprendida** (`politicas/<aplicacao>.json`). Vazio = usa `nome` |
 | `sondas` | `GET` de saúde antes e depois da jornada |
 | `cookie` | sessão de teste; `http_only: false` quando o front lê a sessão por JavaScript |
 | `contexto_ao_llm` | manda o texto visível da tela ao LLM (**desligado por padrão**; veja [Segurança](#segurança-e-limites)) |
 | `logs` | logs do servidor (back, BFF, front…) lidos a **cada passo** |
 | `log_servidor` | um log lido uma vez no fim, para o relatório |
 | `verificacoes` | `GET` somente-leitura do estado do back depois da jornada, com a sessão do alvo |
-| `consultas_sql` | `SELECT` somente-leitura antes e depois, dentro do container do banco |
+| `consultas_sql` | `SELECT` somente-leitura antes e depois, dentro do container do banco. Com `depois_contem`, a consulta vira **critério de aceite**: é avaliada **durante** a rodada (depois de um passo que gravou algo no servidor) e paga a recompensa na borda de subida |
 
 **Código de saída:** `0` verde, `1` com falhas, `2` erro de uso, de configuração ou do agente (inclusive cota do gateway
-esgotada).
+esgotada), `3` **incompleto** (nenhuma falha encontrada, mas o objetivo não foi cumprido: não é aprovação).
 
 ## Ações que o modo genérico entende
 
@@ -239,6 +212,17 @@ de novo só perde.
   chamar o LLM**; a cada 5ª decisão confiante o LLM é consultado mesmo assim (auditoria). Campo de texto nunca.
 - **Treino offline:** `qa-aprende [--politica arq] [--epocas 30] [--banco] <log>...` lê `passos.jsonl` ou a saída de
   texto das rodadas e acumula na política salva. Só a primeira época conta visitas.
+- **Por aplicação, sem perder nada:** cada aplicação tem a sua política em `politicas/<aplicacao>.json`. Salvar **mescla**
+  com o que outra rodada tenha gravado (trava de arquivo, releitura, soma do que esta rodada aprendeu), então rodadas
+  simultâneas não se sobrescrevem. Para migrar uma política única antiga:
+  `qa-aprende --migrar antiga.json --aplicacao <slug> --prefixos /a/,/b/ --resto <slug-das-demais>` (guarda cópia
+  `.bak-<segundos>` e recusa migrar duas vezes).
+- **O objetivo manda na recompensa:** quando uma consulta SQL com `depois_contem` vira verdadeira, o passo recebe uma
+  recompensa grande e os 5 passos anteriores recebem crédito retroativo descontado. Cada critério paga **uma vez** por
+  rodada, e o estado que a política enxerga carrega os critérios já cumpridos (depois de cumprir um, a mesma tela é
+  outra situação). Passo que **gravou** no servidor (POST, PUT, PATCH ou DELETE com 2xx) não é "parado" nem "repetido".
+- **Experimento (a política ajuda?):** `QA_POLITICA_MODO` = `completa` (padrão), `conselho` (só aconselha no prompt) ou
+  `desligada`; `QA_POLITICA_CONGELADA=1` carrega a política mas não grava.
 
 ## Resiliência e custo
 
@@ -246,6 +230,10 @@ de novo só perde.
   quem falha fica 1 minuto fora do rodízio (5 se for cota). `QA_OMNIROUTE_MODELOS` troca o pool.
 - **Chrome que cai:** a jornada sobe um navegador novo (mesma sessão, mesma coleta do back) e recomeça da URL inicial,
   até 5 vezes; depois devolve os passos já feitos com `erro do navegador`.
+- **Gateway instável:** a rodada só começa se o gateway responde a uma chamada barata (pré-voo); falha de rede do
+  gateway repete a volta pelo pool até 3 vezes com espera crescente, e erro transitório (502, 503, 504, resposta vazia)
+  retenta o **mesmo** modelo até 2 vezes. Cota (429) e bloqueio determinístico **não** são retentados. Um orçamento total por
+  chamada (90 s) e um tempo por modelo (45 s) evitam travar a rodada.
 - **Erro grave do agente ou cota:** relatório parcial, nunca perda da rodada.
 - **Custo por passo** (modelo, tokens) vai no rastro e nos insumos; passos da política custam 0 token.
 
@@ -270,7 +258,12 @@ Se o banco não responde, o rastro em arquivo segue e o aviso sai no `stdout`.
 | `QA_OMNIROUTE_CHAVE` | **obrigatória**: chave do gateway OpenAI-compatível |
 | `QA_OMNIROUTE_URL` | URL do gateway (padrão: porta local do gateway) |
 | `QA_OMNIROUTE_MODELOS` | pool de modelos separado por vírgula |
-| `QA_POLITICA` | caminho do `qa-politica.json` (padrão: pasta atual) |
+| `QA_POLITICA` | caminho do arquivo da política (padrão: `politicas/<aplicacao>.json`) |
+| `QA_POLITICA_MODO` | `completa` (padrão), `conselho` ou `desligada` |
+| `QA_POLITICA_CONGELADA` | `1` = carrega a política mas não grava |
+| `QA_OMNIROUTE_TIMEOUT_S` | tempo máximo por modelo (padrão 45) |
+| `QA_OMNIROUTE_ORCAMENTO_S` | tempo máximo da chamada inteira (padrão 90) |
+| `QA_OMNIROUTE_ESPERA_MS` | espera-base entre retentativas (padrão 3000) |
 
 ## Testes
 
