@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<title>Formulario de teste do qa-agente</title>
+</head>
+<body>
+<h1>Novo personagem</h1>
+<div>
+  <label for="nome">Nome do personagem</label>
+  <input id="nome" type="text">
+</div>
+<div>
+  <input id="termos" type="checkbox">
+  <label for="termos">Aceito os termos</label>
+</div>
+<div>
+  <label for="classe">Classe</label>
+  <select id="classe">
+    <option value="">Escolha...</option>
+    <option value="guerreiro">Guerreiro</option>
+    <option value="mago">Mago</option>
+  </select>
+</div>
+<div>
+  <label>Especie —
+    <select id="especie">
+      <option value="">Escolha...</option>
+      <option value="aasimar">Aasimar</option>
+      <option value="anao">Anão</option>
+    </select>
+  </label>
+</div>
+<p id="resumo"></p>
+<script>
+const atualizar = () => {
+  const nome = document.getElementById('nome').value;
+  const termos = document.getElementById('termos').checked;
+  const classe = document.getElementById('classe').value;
+  const especie = document.getElementById('especie').value;
+  document.getElementById('resumo').textContent = `nome=${nome};termos=${termos};classe=${classe};especie=${especie}`;
+};
+for (const id of ['nome', 'termos', 'classe', 'especie']) {
+  document.getElementById(id).addEventListener('input', atualizar);
+  document.getElementById(id).addEventListener('change', atualizar);
+}
+atualizar();
+</script>
+</body>
+</html>

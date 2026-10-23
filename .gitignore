@@ -1,0 +1,13 @@
+/target
+/target-dev*
+/qa-saida
+/qa-politica.json
+/qa-politica.tmp
+
+# dados e ferramentas internas (alvos reais, politica aprendida com telas reais): nao publicar
+/alvos/*
+!/alvos/exemplo.json
+/tools/portal-*.sh
+/tools/montar-alvo.mjs
+/tools/configurar-alvo-*.mjs
+/docs/portal-gestor.md

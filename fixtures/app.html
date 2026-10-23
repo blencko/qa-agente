@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8">
+<title>Aplicacao de teste do qa-agente</title>
+</head>
+<body data-estado="login">
+<section id="login"><h1>Login</h1><button data-acao="entrar">Entrar</button></section>
+<section id="painel" hidden><h1>Painel</h1>
+  <button data-acao="abrir_chat">Chat</button>
+  <button data-acao="sair">Sair</button>
+</section>
+<section id="chat" hidden><h1>Chat</h1>
+  <p id="resposta"></p>
+  <button data-acao="perguntar">Perguntar saldo</button>
+  <button data-acao="voltar">Voltar</button>
+</section>
+<script>
+const transicoes = { entrar: 'painel', abrir_chat: 'chat', sair: 'login', voltar: 'painel' };
+function ir(estado) {
+  document.body.dataset.estado = estado;
+  for (const s of document.querySelectorAll('section')) s.hidden = s.id !== estado;
+}
+document.addEventListener('click', (ev) => {
+  const acao = ev.target.dataset.acao;
+  if (!acao) return;
+  if (acao === 'perguntar') { document.getElementById('resposta').textContent = 'Seu saldo e R$ 10,00'; return; }
+  ir(transicoes[acao]);
+});
+</script>
+</body>
+</html>

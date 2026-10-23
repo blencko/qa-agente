@@ -1,0 +1,22 @@
+{
+  "nome": "meu-app",
+  "url": "http://localhost:3000",
+  "objetivo": "Explorar as telas principais do app como um usuario novo, sem criar, editar nem apagar nada.",
+  "modo": "generico",
+  "limite_passos": 30,
+  "contexto_ao_llm": false,
+  "acoes_de_escrita": "salvar|enviar|aprovar|excluir",
+  "max_escritas": 0,
+  "sondas": [{ "nome": "front", "url": "http://localhost:3000" }],
+  "cookie": { "nome": "sessao", "valor": "<token-de-uma-sessao-de-teste>", "dominio": "localhost", "http_only": true },
+  "logs": [{ "nome": "servidor", "caminho": "/caminho/do/log-do-servidor.log" }],
+  "consultas_sql": [
+    {
+      "nome": "registros por status",
+      "container": "meu-banco",
+      "banco": "meu_db",
+      "sql": "SELECT status, count(*) FROM pedidos GROUP BY status ORDER BY 1",
+      "depois_contem": ""
+    }
+  ]
+}

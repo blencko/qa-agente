@@ -1,0 +1,11 @@
+[package]
+name = "qa-agente"
+version = "0.1.0"
+edition = "2021"
+description = "Replica interna do fluxo do agente de QA autonomo, com o motor de decisao nos pontos de escolha"
+
+[dependencies]
+headless_chrome = "1.0.22"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", default-features = false, features = ["json"] }
