@@ -8,6 +8,11 @@ pub struct Verificacao {
     pub url: String,
     pub status_esperado: u16,
     pub contem: String,
+    /// Trecho que o corpo NAO pode conter (vazio = nao confere).
+    pub nao_contem: String,
+    /// Sessao (nome, valor) usada SO nesta checagem, no lugar da sessao do alvo: serve para provar que um usuario fora da
+    /// hierarquia e recusado (status esperado 401/403) ou que o dono enxerga o proprio dado.
+    pub cookie: Option<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -24,6 +29,7 @@ pub fn executar(verificacoes: &[Verificacao], cookie: Option<(&str, &str)>) -> V
 
 fn verificar(v: &Verificacao, cookie: Option<(&str, &str)>) -> ResultadoVerificacao {
     let mut pedido = ureq::get(&v.url).timeout(Duration::from_secs(10));
+    let cookie = v.cookie.as_ref().map(|(n, c)| (n.as_str(), c.as_str())).or(cookie);
     if let Some((nome, valor)) = cookie {
         pedido = pedido.set("Cookie", &format!("{nome}={valor}"));
     }
@@ -38,6 +44,8 @@ fn verificar(v: &Verificacao, cookie: Option<(&str, &str)>) -> ResultadoVerifica
         format!("esperava {} e veio {status}", v.status_esperado)
     } else if !v.contem.is_empty() && !corpo.contains(&v.contem) {
         format!("a resposta nao contem {:?}", v.contem)
+    } else if !v.nao_contem.is_empty() && corpo.contains(&v.nao_contem) {
+        format!("a resposta contem {:?}, que nao podia aparecer", v.nao_contem)
     } else {
         String::new()
     };
@@ -71,7 +79,24 @@ mod testes {
     }
 
     fn verificacao(url: String, contem: &str) -> Verificacao {
-        Verificacao { nome: "campanha".into(), url, status_esperado: 200, contem: contem.into() }
+        Verificacao { nome: "campanha".into(), url, status_esperado: 200, contem: contem.into(), nao_contem: String::new(), cookie: None }
+    }
+
+    #[test]
+    fn cookie_proprio_da_checagem_vale_mais_que_o_do_alvo() {
+        let url = servidor("[]", "sessao=outro");
+        let v = Verificacao { cookie: Some(("sessao".into(), "outro".into())), ..verificacao(url, "") };
+        let r = executar(&[v], Some(("sessao", "dono")));
+        assert!(r[0].ok, "a checagem usa a sessao dela, nao a do alvo: {r:?}");
+    }
+
+    #[test]
+    fn corpo_com_trecho_proibido_reprova_sem_vazar_o_corpo() {
+        let url = servidor("{\"eventos\":[1]}", "sessao=abc");
+        let v = Verificacao { nao_contem: "eventos".into(), ..verificacao(url, "") };
+        let r = executar(&[v], Some(("sessao", "abc")));
+        assert!(!r[0].ok);
+        assert_eq!(r[0].detalhe, "a resposta contem \"eventos\", que nao podia aparecer");
     }
 
     #[test]

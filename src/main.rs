@@ -170,10 +170,11 @@ fn rodar(caminho: &Path) -> Result<u8, String> {
 
     let depois = sondas::executar(&alvo.sondas());
     // Estado gravado DEPOIS: cada consulta vira um veredito (esperado presente?) e o relatorio mostra o antes e o depois.
+    let escritas_da_rodada: Vec<String> = passos.iter().flat_map(|p| p.efeito.escritas.iter().cloned()).collect();
     let resultados_sql: Vec<qa_agente::consultas_sql::ResultadoSql> = consultas
         .iter()
         .zip(sql_antes)
-        .map(|(c, antes)| qa_agente::consultas_sql::comparar(c, antes, qa_agente::consultas_sql::executar(c)))
+        .map(|(c, antes)| qa_agente::consultas_sql::comparar(c, antes, qa_agente::consultas_sql::executar(c), &escritas_da_rodada))
         .collect();
     for r in &resultados_sql {
         println!("[banco] {}: {} ({})", r.nome, if r.ok { "ok" } else { "FALHOU" }, r.detalhe);

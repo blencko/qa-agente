@@ -37,6 +37,12 @@ pub struct VerificacaoAlvo {
     /// Trecho que o corpo da resposta precisa conter (vazio = so confere o status).
     #[serde(default)]
     pub contem: String,
+    /// Trecho que o corpo NAO pode conter.
+    #[serde(default)]
+    pub nao_contem: String,
+    /// Sessao so desta checagem (outro usuario), no lugar do `cookie` do alvo; so `nome` e `valor` sao usados.
+    #[serde(default)]
+    pub cookie: Option<CookieAlvo>,
 }
 
 /// Um projeto a testar. Um arquivo JSON por alvo: o mesmo `qa-agente` serve ao jogo, ao painel do Vigia,
@@ -110,6 +116,15 @@ pub struct ConsultaSqlAlvo {
     /// Trecho que o resultado DEPOIS da jornada precisa conter (vazio = so registra antes e depois).
     #[serde(default)]
     pub depois_contem: String,
+    /// Trecho que precisa estar numa linha NOVA (ausente antes da jornada); dado antigo nao satisfaz.
+    #[serde(default)]
+    pub novo_contem: String,
+    /// `novo_contem` so vale se alguma escrita da rodada contiver este trecho (ex.: `reject`). Vazio = sempre.
+    #[serde(default)]
+    pub quando_escrita: String,
+    /// A consulta lista violacoes de uma invariante: qualquer linha NOVA depois da jornada reprova.
+    #[serde(default)]
+    pub sem_novo: bool,
 }
 
 fn container_padrao() -> String {
@@ -168,6 +183,9 @@ impl Alvo {
                 container: c.container.clone(),
                 banco: c.banco.clone(),
                 depois_contem: c.depois_contem.clone(),
+                novo_contem: c.novo_contem.clone(),
+                quando_escrita: c.quando_escrita.clone(),
+                sem_novo: c.sem_novo,
             })
             .collect()
     }
@@ -187,6 +205,8 @@ impl Alvo {
                 url: v.url.clone(),
                 status_esperado: v.status,
                 contem: v.contem.clone(),
+                nao_contem: v.nao_contem.clone(),
+                cookie: v.cookie.as_ref().map(|c| (c.nome.clone(), c.valor.clone())),
             })
             .collect()
     }
